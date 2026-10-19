@@ -140,5 +140,135 @@ display(spark.sql("SELECT status, COUNT(*) AS runs FROM partner_feeds.bronze.del
 
 # COMMAND ----------
 
+# MAGIC %sql
+# MAGIC LIST '/Volumes/partner_feeds/bronze/landing/partner_a/products'
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+spark.sql("CREATE VOLUME IF NOT EXISTS partner_feeds.bronze.checkpoints")
+
+base = "/Volumes/partner_feeds/bronze"
+source_path = f"{base}/landing/partner_b/products/"
+checkpoint = f"{base}/checkpoints/partner_b_products"
+target_table = "partner_feeds.bronze.partner_b_products"
+
+raw = (
+    spark.readStream
+    .format("cloudFiles")
+    .option("cloudFiles.format", "csv")
+    .option("header", "true")
+    .option("cloudFiles.inferColumnTypes", "false")
+    .option("cloudFiles.schemaLocation", checkpoint)
+    .load(source_path)
+    .withColumn("_source_file", F.col("_metadata.file_path"))
+    .withColumn("_ingested_at", F.current_timestamp())
+)
+
+(
+    raw.writeStream
+    .option("checkpointLocation", checkpoint)
+    .trigger(availableNow=True)
+    .toTable(target_table)
+    .awaitTermination()
+)
+
+print("done")
+
+# COMMAND ----------
+
+display(spark.sql("""
+    SELECT COUNT(DISTINCT _source_file) AS files, COUNT(*) AS row_count
+    FROM partner_feeds.bronze.partner_b_products
+"""))
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+BASE = "/Volumes/partner_feeds/bronze"
+
+
+def ingest(name, folder, fmt, glob, extra=None):
+    checkpoint = f"{BASE}/checkpoints/{name}"
+    reader = (
+        spark.readStream.format("cloudFiles")
+        .option("cloudFiles.format", fmt)
+        .option("cloudFiles.inferColumnTypes", "false")
+        .option("cloudFiles.schemaLocation", checkpoint)
+        .option("pathGlobFilter", glob)
+    )
+    for key, value in (extra or {}).items():
+        reader = reader.option(key, value)
+
+    df = (
+        reader.load(f"{BASE}/landing/{folder}/")
+        .withColumn("_source_file", F.col("_metadata.file_path"))
+        .withColumn("_ingested_at", F.current_timestamp())
+    )
+
+    (
+        df.writeStream
+        .option("checkpointLocation", checkpoint)
+        .trigger(availableNow=True)
+        .toTable(f"partner_feeds.bronze.{name}")
+        .awaitTermination()
+    )
+    print("done:", name)
+
+
+ingest("partner_a_products_xml", "partner_a/products", "xml", "*.xml", {"rowTag": "Product"})
+ingest("partner_a_products_json", "partner_a/products", "json", "*.json")
+ingest("partner_a_inventory", "partner_a/inventory", "csv", "*.csv", {"header": "true"})
+ingest("partner_b_inventory", "partner_b/inventory", "csv", "*.csv", {"header": "true"})
+ingest("partner_c_products", "partner_c/products", "json", "*.jsonl")
+ingest("partner_c_inventory", "partner_c/inventory", "json", "*.jsonl")
+
+# COMMAND ----------
+
+from pyspark.sql import functions as F
+
+base = "/Volumes/partner_feeds/bronze"
+source_path = f"{base}/landing/partner_b/products/"
+checkpoint = f"{base}/checkpoints/partner_b_products"
+target_table = "partner_feeds.bronze.partner_b_products"
+
+raw = (
+    spark.readStream
+    .format("cloudFiles")
+    .option("cloudFiles.format", "csv")
+    .option("header", "true")
+    .option("cloudFiles.inferColumnTypes", "false")
+    .option("cloudFiles.schemaLocation", checkpoint)
+    .load(source_path)
+    .withColumn("_source_file", F.col("_metadata.file_path"))
+    .withColumn("_ingested_at", F.current_timestamp())
+)
+
+(
+    raw.writeStream
+    .option("checkpointLocation", checkpoint)
+    .trigger(availableNow=True)
+    .toTable(target_table)
+    .awaitTermination()
+)
+
+print("done: partner_b_products")
+
+# COMMAND ----------
+
+display(spark.sql("""
+    SELECT 'a_xml' AS tbl, COUNT(DISTINCT _source_file) AS files, COUNT(*) AS row_count FROM partner_feeds.bronze.partner_a_products_xml
+    UNION ALL SELECT 'a_json', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_a_products_json
+    UNION ALL SELECT 'a_inventory', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_a_inventory
+    UNION ALL SELECT 'b_products', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_b_products
+    UNION ALL SELECT 'b_inventory', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_b_inventory
+    UNION ALL SELECT 'c_products', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_c_products
+    UNION ALL SELECT 'c_inventory', COUNT(DISTINCT _source_file), COUNT(*) FROM partner_feeds.bronze.partner_c_inventory
+"""))
+
+# COMMAND ----------
+
 # MAGIC %md
 # MAGIC
